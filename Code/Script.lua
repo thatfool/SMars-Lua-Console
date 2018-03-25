@@ -148,6 +148,8 @@ function LuaConsoleWindow:Init()
             "-",
             "Open Scratch Pad",
             "Reload Scratch Pad",
+            "-",
+            "Verify Mod Syntax",
             "Reload Mods",
         }) do
             local itm = StaticText:new(tmp)
@@ -399,11 +401,56 @@ function LuaConsoleWindow:MenuAction(val)
         self:ExecuteScratchPad()
         return
     end
+    if val == "Verify Mod Syntax" then
+        self:VerifyModSyntax(true)
+        return
+    end
     if val == "Reload Mods" then
+        if self:VerifyModSyntax() then
+            self:Print("Not reloading!")
+            return
+        end
         self:Print("Reloading mods...")
         ReloadLua()
         return
     end
+end
+
+function LuaConsoleWindow:VerifyModSyntax(verbose)
+    local result = nil
+    for modId, mod in pairs(Mods) do
+        if verbose and mod.title and mod.author then
+            local citems = 0
+            if mod.code then
+                citems = #mod.code
+            end
+            local comment = ""
+            if mod.path:match("^AppData/Mods") then
+                comment = " <color 255 255 100>(local)<color 255 200 100>"
+            end
+            self:Print("<color 255 200 100>" .. mod.title .. " by " .. mod.author .. comment .. ":<color 255 255 255> " .. citems .. " code item(s)")
+        end
+        if mod.code then
+            for i, fname in ipairs(mod.code) do
+                local fpath = ConvertToOSPath(mod.path .. fname)
+                local fun, err = loadfile(fpath, nil, _G)
+                if err then
+                    if verbose then
+                        self:Print("<color 255 100 100>        -- " .. fname .. " [ERROR]")
+                    end
+                    self:Print("<color 255 100 100>" .. err)
+                    if verbose then
+                        result = true
+                    else
+                        return true
+                    end
+                elseif verbose then
+                    self:Print("<color 100 255 100>        -- " .. fname .. " [OK]")
+                end
+            end
+        end
+    end
+    return result
 end
 
 function LuaConsoleWindow:ExecuteScratchPad()
@@ -535,6 +582,12 @@ function LuaConsoleWindow:Input(text)
     
     self.lastInput = text
 
+    local tracing = false
+    if text:match("^trace ") then
+        tracing = true
+        text = text:sub(7)
+    end
+
     local fun, err = load("return " .. text, nil, nil, _G)
     if err then
         self:Print("<color 200 200 200>$ " .. Literal(text))
@@ -549,19 +602,150 @@ function LuaConsoleWindow:Input(text)
         self:Print("<color 200 200 200>$ <h expr " .. #self.watchHistory .. " 100 255 100>" .. Literal(text) .. "</h>")
     end
 
-    try(function()
-        local res = fun()
-        if res then
-            luaConsoleWindow:Print("<color 255 255 255>" .. Literal(print_format(res)))
+    if tracing then
+        luaConsoleTracing = nil
+        luaConsoleTracingFile = nil
+        luaConsoleTracingLocals = {}
+        luaConsoleTracingFileName = nil
+        luaConsoleTracingFirstFile = true
+
+        debug.sethook(luaConsoleTraceHook, "l")
+        local s, r = pcall(fun)
+        debug.sethook()
+
+        if not s then
+            lcPrint("<color 255 100 100>Exception: " .. r)
+        else
+            lcPrint("<color 255 255 255>Result: " .. print_format(r or "nil"))
         end
+        return
+    end
+
+    try(function()
+        local res = { fun() }
+        local text = ""
+        for i, v in ipairs(res) do
+            if i > 1 then
+                text = text .. ", "
+            end
+            text = text .. Literal(print_format(v))
+        end
+        luaConsoleWindow:Print("<color 255 255 255>" .. text)
     end, function(ex)
         luaConsoleWindow:Print("<color 255 100 100>" .. Literal(ex))
     end)
 end
 
-function lcPrint(text)
-    if not text then
-        return
+luaConsoleTracing = nil
+luaConsoleTracingFile = nil
+luaConsoleTracingFileName = nil
+luaConsoleTracingNext = false
+luaConsoleTracingLocals = {}
+luaConsoleTracingFirstFile = false
+
+function luaConsoleTraceHook(event, line)
+    local info = debug.getinfo(2)
+    local src = info.short_src
+    if luaConsoleTracingFirstFile and not luaConsoleTracingFileName then
+        if src ~= debug.getinfo(luaConsoleWindow.Init).short_src then
+            if src:match("^AppData/Mods/") then
+                luaConsoleTracingFileName = src
+                luaConsoleTracing = info.func
+                local f = io.open(ConvertToOSPath(src), "r")
+                if f then
+                    luaConsoleTracingFile = {}
+                    for l in f:lines() do
+                        table.insert(luaConsoleTracingFile, l)
+                    end
+                    f:close()
+                end
+            end
+        else
+            return
+        end
+    end
+    if src == luaConsoleTracingFileName then
+        if src:match("^AppData/Mods/") then
+            src= src:sub(14)
+        elseif src:match("^.string ") then
+            src = "string"
+        end
+        local name = ""
+        if info.name then
+            name = " " .. info.name
+        end
+        if luaConsoleTracingFile ~= nil and info.linedefined and luaConsoleTracingFile[info.linedefined] ~= nil then
+            name = luaConsoleTracingFile[info.linedefined]
+            if name:match("^local ") then
+                name = name:sub(7)
+            end
+            if name:match("^function ") then
+                name = name:sub(10)
+            end
+            name = " " .. name
+        end
+        local tag = "[" .. tostring(line) .. name .. "] "
+        local l = tag
+        if luaConsoleTracingFile ~= nil and luaConsoleTracingFile[line] ~= nil then
+            l = l .. luaConsoleTracingFile[line] .. " "
+        end
+        if info.func == luaConsoleTracing then
+            local lidx = 0
+            while true do
+                lidx = lidx + 1
+                local ln, lv = debug.getlocal(2, lidx)
+                if ln == nil then
+                    break
+                end
+                if ln ~= "(*temporary)" and luaConsoleTracingLocals[ln] ~= lv then
+                    luaConsoleTracingLocals[ln] = lv
+                    lcPrint("<color 150 150 250>" .. tag .. "-- " .. ln .. " = " .. tostring(lv))
+                end
+            end
+            l = "<color 150 250 150>" .. l
+        else
+            l = "<color 200 200 200>" .. l
+        end
+        lcPrint(l)
+    end
+end
+
+function lcTrace(fun, ...)
+    luaConsoleTracing = fun
+    luaConsoleTracingFile = nil
+    luaConsoleTracingLocals = {}
+    luaConsoleTracingFileName = nil
+    luaConsoleTracingFirstFile = false
+    local path = debug.getinfo(fun).short_src
+    luaConsoleTracingFileName = path
+    if path and path:match("^AppData/") then
+        local f = io.open(ConvertToOSPath(path), "r")
+        if f then
+            luaConsoleTracingFile = {}
+            for l in f:lines() do
+                table.insert(luaConsoleTracingFile, l)
+            end
+            f:close()
+        end
+    end
+
+    debug.sethook(luaConsoleTraceHook, "l")
+    local s, r = pcall(fun, ...)
+    debug.sethook()
+    if not s then
+        lcPrint("<color 255 100 100>Exception: " .. r)
+    else
+        lcPrint("<color 255 255 255>Result: " .. print_format(r or "nil"))
+    end
+end 
+
+function lcPrint(...)
+    local text = ""
+    for i, v in ipairs({...}) do
+        if i > 1 then
+            text = text .. ", "
+        end
+        text = text .. tostring(v)
     end
     if luaConsoleWindow then
         luaConsoleWindow:Print("<color 255 255 255>" .. text)
