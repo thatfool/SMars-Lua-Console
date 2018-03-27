@@ -1,3 +1,10 @@
+--
+-- Lua Console by special_snowcat
+-- Adds a lua console window to the game
+--
+
+local consoleModID = "fkm1iEz"
+
 -- Utility
 
 local try = function(try_fun, catch_fun)
@@ -164,7 +171,7 @@ function LuaConsoleWindow:Init()
         tmp = StaticText:new(self)
         tmp:SetId("lcText")
         tmp:SetPos(point(102*s, 125*s+self.caption_height))
-        tmp:SetSize(point(396*s, 378*s-125*s-self.caption_height-2))
+        tmp:SetSize(point(396*s, 378*s-125*s-self.caption_height))
         tmp:SetHSizing("Resize")
         tmp:SetVSizing("Resize")
         tmp:SetBackgroundColor(RGBA(0,0,0,50))
@@ -313,6 +320,111 @@ function LuaConsoleWindow:OnBoxChanged()
     end
 end
 
+function LuaConsoleWindow:SetTransparency(alpha)
+    self:RemoveModifier("alpha")
+    self:AddInterpolation({
+        id = "alpha",
+        type = const.intAlpha,
+        startValue = alpha
+    })
+
+    self.lcText:RemoveModifier("alpha")
+    self.lcText:AddInterpolation({
+        id = "alpha",
+        type = const.intAlpha,
+        startValue = 255,
+        flags = const.intfIgnoreParent
+    })
+
+    self.lcInput:RemoveModifier("alpha")
+    self.lcInput:AddInterpolation({
+        id = "alpha",
+        type = const.intAlpha,
+        startValue = 255,
+        flags = const.intfIgnoreParent
+    })
+end
+
+function LuaConsoleWindow:ModConfigUpdate()
+    try(function()
+        if ModConfig then
+            local tmp = ModConfig:Get("SnowcatLuaConsole", "WindowPositionReset")
+            if tmp then
+                self:SetPos(point(100, 100))
+                self:SetSize(point(400, 300))
+                self.minX = 10
+                self.minY = 10
+                if luaConsoleMinimized then
+                    luaConsoleMinimized:SetPos(point(10, 10))
+                end
+                ModConfig:Set("SnowcatLuaConsole", "WindowPositionReset", false, "self-inflicted")
+            end
+
+            tmp = ModConfig:Get("SnowcatLuaConsole", "FontUseBundled")
+            self:UseBundledFont(tmp)
+
+            tmp = ModConfig:Get("SnowcatLuaConsole", "FontSize")
+            if tmp ~= self.lcText.font_scale then
+                self.lcText.font_scale = tmp
+                self.lcText:UpdateFont()
+                self.lcText:SetText(self.lcText.text .. " ")
+                self.lcText.scroll:SetValue(0)
+                self.lcText.scroll:SetValue(self.lcText.scroll:GetMax())
+            end
+
+            tmp = ModConfig:Get("SnowcatLuaConsole", "Transparency")
+            if tmp then
+                self:SetTransparency(tmp)
+            end
+            
+            tmp = ModConfig:Get("SnowcatLuaConsole", "ConsoleVisible")
+            self:SetVisible(tmp)
+        end
+    end, function(ex) end)
+end
+
+function LuaConsoleWindow:UseBundledFont(flag)
+    local fontStyleInput = "Editor12Bold"
+    local fontStyleText = "Editor12"
+    if flag then
+        fontStyleInput = "LuaConsoleMod"
+        fontStyleText = "LuaConsoleMod"
+    end
+    if self.lcText:GetFontStyle() == fontStyleText and self.lcInput:GetFontStyle() == fontStyleInput then
+        return
+    end
+    if flag then
+        if not FontStyles.LuaConsoleMod then
+            FontStyles.LuaConsoleMod = "Inconsolata, 14, aa"
+        end
+        local src_path = ConvertToOSPath(Mods[consoleModID].content_path .. "/Fonts/")
+        local dst_path = ConvertToOSPath("./Fonts") .. "/"
+        local installed = false
+        for i, fname in ipairs({"Inconsolata-Regular.ttf", "Inconsolata-Regular-license-OFL.txt"}) do
+            local tmp = io.open(dst_path .. fname, "rb")
+            if tmp then
+                tmp:close()
+            else
+                lfs.mkdir(dst_path)
+                local fin = io.open(src_path .. fname, "rb")
+                local fout = io.open(dst_path .. fname, "wb")
+                fout:write(fin:read("*a"))
+                fout:close()
+                fin:close()
+                lcPrint("<color 255 255 100>Installed bundled file: " .. fname)
+                installed = true
+            end
+        end
+        if installed then
+            lcPrint("<color 255 255 100>Font will be available on next game restart.")
+        end
+    end
+    self.lcText:SetFontStyle(fontStyleText, 100)
+    self.lcInput:SetFontStyle(fontStyleInput, 100)
+    self.lcText.scroll:SetValue(0)
+    self.lcText.scroll:SetValue(self.lcText.scroll:GetMax())
+end
+
 function LuaConsoleWindow:LoadSettings()
     local s = LocalStorage.luaConsoleSettings
     if s then
@@ -362,6 +474,8 @@ function LuaConsoleWindow:MenuAction(val)
         self:Print("")
         self:Print("Click an expression you've entered previously to watch it, or use the menu to watch your last input.")
         self:Print("Watched expressions are updated once per second.")
+        self:Print("")
+        self:Print("Type 'trace' followed by an expression to trace its execution.")
         self:Print("")
         self:Print("Useful engine variables (click to watch):")
         table.insert(self.watchHistory, "SelectedObj")
@@ -616,7 +730,10 @@ function LuaConsoleWindow:Input(text)
         if not s then
             lcPrint("<color 255 100 100>Exception: " .. r)
         else
-            lcPrint("<color 255 255 255>Result: " .. print_format(r or "nil"))
+            if r == nil then
+                r = "nil"
+            end
+            lcPrint("<color 255 255 255>Result: " .. print_format(r))
         end
         return
     end
@@ -645,10 +762,21 @@ luaConsoleTracingFirstFile = false
 
 function luaConsoleTraceHook(event, line)
     local info = debug.getinfo(2)
-    local src = info.short_src
+    local src = info.source:sub(2)
     if luaConsoleTracingFirstFile and not luaConsoleTracingFileName then
-        if src ~= debug.getinfo(luaConsoleWindow.Init).short_src then
+        if src ~= debug.getinfo(luaConsoleWindow.Init).source:sub(2) then
+            local isModPath = false
             if src:match("^AppData/Mods/") then
+                isModPath = true
+            else
+                for k, v in pairs(Mods) do
+                    if v and v.content_path and src:match("^" .. v.content_path) then
+                        isModPath = true
+                        break
+                    end
+                end
+            end
+            if isModPath then
                 luaConsoleTracingFileName = src
                 luaConsoleTracing = info.func
                 local f = io.open(ConvertToOSPath(src), "r")
@@ -665,11 +793,6 @@ function luaConsoleTraceHook(event, line)
         end
     end
     if src == luaConsoleTracingFileName then
-        if src:match("^AppData/Mods/") then
-            src= src:sub(14)
-        elseif src:match("^.string ") then
-            src = "string"
-        end
         local name = ""
         if info.name then
             name = " " .. info.name
@@ -716,9 +839,20 @@ function lcTrace(fun, ...)
     luaConsoleTracingLocals = {}
     luaConsoleTracingFileName = nil
     luaConsoleTracingFirstFile = false
-    local path = debug.getinfo(fun).short_src
+    local path = debug.getinfo(fun).source:sub(2)
+    local isModPath = false
+    if path:match("^AppData/") then
+        isModPath = true
+    else
+        for k, v in pairs(Mods) do
+            if path:match("^" .. v.content_path) then
+                isModPath = true
+                break
+            end
+        end
+    end
     luaConsoleTracingFileName = path
-    if path and path:match("^AppData/") then
+    if path and isModPath then
         local f = io.open(ConvertToOSPath(path), "r")
         if f then
             luaConsoleTracingFile = {}
@@ -761,6 +895,65 @@ function lcWatch(expr)
     end
 end
 
+function OnMsg.ModConfigReady()
+    ModConfig:RegisterMod("SnowcatLuaConsole", "Lua Console")
+    ModConfig:RegisterOption("SnowcatLuaConsole", "ConsoleVisible", {
+        name = "Console Visible",
+        desc = "Show or hide the console window.",
+        type = "boolean",
+        default = true
+    })
+    ModConfig:RegisterOption("SnowcatLuaConsole", "FontSize", {
+        name = "Font Size",
+        desc = "Adjust the font size used by the console.",
+        type = "enum",
+        values = { 
+            { value=75, label="75%" },
+            { value=100, label="100%" },
+            { value=125, label="125%" },
+            { value=150, label="150%" },
+            { value=175, label="175%" },
+            { value=200, label="200%" },
+        },
+        default = 100
+    })
+    ModConfig:RegisterOption("SnowcatLuaConsole", "FontUseBundled", {
+        name = "Use Bundled Console Font",
+        desc = "Use the bundled monospace font. This option installs the bundled font into the game's Fonts/ directory. May need a restart.",
+        type = "boolean",
+        default = false
+    })
+    ModConfig:RegisterOption("SnowcatLuaConsole", "Transparency", {
+        name = "Window Transparency",
+        desc = "I heard you liked seeing the actual game, too.",
+        type = "enum",
+        values = { 
+            { value=255, label="0%" },
+            { value=255*0.75, label="25%" },
+            { value=255*0.5, label="50%" },
+            { value=255*0.25, label="75%" },
+        },
+        default = 255
+    })
+    ModConfig:RegisterOption("SnowcatLuaConsole", "WindowPositionReset", {
+        name = "Reset Window Position",
+        desc = "Reset the stored position of the Lua Console window.",
+        type = "boolean",
+        default = false
+    })
+end
+
+function OnMsg.ModConfigChanged(mod_id, option_id, value, old_value, token)
+    if token == "self-inflicted" then
+        return
+    end
+    try(function()
+        if luaConsoleWindow then
+            luaConsoleWindow:ModConfigUpdate()
+        end
+    end, function(ex) end)
+end
+
 function OnMsg.Autorun()
     tryfun("Autorun", function()
         ShowConsole(true)
@@ -786,6 +979,11 @@ function OnMsg.Autorun()
         end
         luaConsoleReloaded = true
         luaConsoleWindow:ExecuteScratchPad()
+
+        CreateRealTimeThread(function()
+            Sleep(500)
+            luaConsoleWindow:ModConfigUpdate()
+        end)
     end)
 end
 
