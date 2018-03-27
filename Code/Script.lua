@@ -4,11 +4,97 @@
 --
 
 local consoleModID = "fkm1iEz"
+local consoleModSource = debug.getinfo(function() end).source
 
 -- Utility
 
-local try = function(try_fun, catch_fun)
-    local s, r = pcall(try_fun)
+local trace_stack = function(sidx)
+    sidx = sidx or 2
+    local idx = sidx
+    local trace = "stack trace:\n"
+    while true do
+        local info = debug.getinfo(idx)
+        if not info then
+            break
+        end
+        local txt = ""
+        if info.name ~= nil then
+            txt = info.name .. "()"
+        end
+        if info.source == consoleModSource then
+            break
+        elseif info.short_src:match('^.string "') then
+            if txt ~= "" then
+                txt = txt .. "@"
+            end
+            if info.source == "<console input>" then
+                if idx == 2 then
+                    trace = nil
+                    return x
+                end
+                txt = ""
+            end
+            txt = txt .. info.source .. ":" .. tostring(info.currentline)
+        elseif info.short_src == "[C]" then
+            txt = txt .. " [C]"
+        else
+            txt = txt .. info.source .. ":" .. tostring(info.currentline)
+        end
+        local lidx = 1
+        local lcount = 1
+        while true do
+            local ln, lv = debug.getlocal(idx, lidx)
+            if not ln then
+                break
+            end
+            if ln:sub(1,1) ~= "(" then
+                if lcount == 1 then
+                    txt = txt .. ", locals:"
+                end
+                if type(lv) == "table" then
+                    lv = "<table>"
+                elseif type(lv) == "function" then
+                    local fn = debug.getinfo(lv).name
+                    if fn then
+                        lv = "<function " .. fn .. ">"
+                    else
+                        lv = "<function>"
+                    end
+                elseif type(lv) == "string" then
+                    if #lv > 15 then
+                        lv = lv:sub(1, 15) .. "..."
+                    end
+                    lv = '"' .. lv .. '"'
+                end
+                txt = txt .. " " .. tostring(ln) .. "=" .. tostring(lv)
+                lcount = lcount + 1
+                if lcount > 8 then
+                    txt = txt .. " ..."
+                    break
+                end
+            end
+            lidx = lidx + 1
+        end
+        trace = trace .. tostring(idx-sidx+1) .. ". " .. txt .. "\n"
+        idx = idx + 1
+        if idx-sidx >= 15 then
+            trace = trace .. "...\n"
+            break
+        end
+    end
+    return trace
+end
+
+local try_traceback = nil
+local try = function(try_fun, catch_fun, ...)
+    try_traceback = nil
+    local s, r = xpcall(try_fun, function(x)
+        local is, ir = pcall(trace_stack, 4)
+        if is then
+            try_traceback = ir
+        end
+        return x
+    end, ...)
     if not s then
         catch_fun(r)
     else
@@ -576,7 +662,7 @@ function LuaConsoleWindow:ExecuteScratchPad()
     local text = f:read("*a")
     f:close()
 
-    local fun, err = load(text, nil, nil, _G)
+    local fun, err = load(text, "<scratch pad>", nil, _G)
     if err then
         self:Print("<color 255 100 100>Scratch Pad: " .. err)
         return
@@ -702,11 +788,11 @@ function LuaConsoleWindow:Input(text)
         text = text:sub(7)
     end
 
-    local fun, err = load("return " .. text, nil, nil, _G)
+    local fun, err = load("return " .. text, "<console input>", "t", _G)
     if err then
         self:Print("<color 200 200 200>$ " .. Literal(text))
         local err2
-        fun, err2 = load(text, nil, nil, _G)
+        fun, err2 = load(text, "<console input>", "t", _G)
         if err2 then
             self:Print("<color 255 100 100>" .. Literal(err))
             return
@@ -738,7 +824,7 @@ function LuaConsoleWindow:Input(text)
         return
     end
 
-    try(function()
+    try(function(fun)
         local res = { fun() }
         local text = ""
         for i, v in ipairs(res) do
@@ -750,7 +836,10 @@ function LuaConsoleWindow:Input(text)
         luaConsoleWindow:Print("<color 255 255 255>" .. text)
     end, function(ex)
         luaConsoleWindow:Print("<color 255 100 100>" .. Literal(ex))
-    end)
+        if try_traceback ~= nil then
+            luaConsoleWindow:Print("<color 255 150 100>" .. Literal(try_traceback))
+        end
+    end, fun)
 end
 
 luaConsoleTracing = nil
@@ -892,6 +981,26 @@ end
 function lcWatch(expr)
     if luaConsoleWindow then
         luaConsoleWindow:AddWatch(expr)
+    end
+end
+
+function lcDebug(...)
+    local info = debug.getinfo(2)
+    lcPrint("<color 255 150 100>--- " .. tostring(info.source) .. ":" .. tostring(info.currentline) .. " ---")
+    lcPrint(...)
+    local idx = 1
+    while true do
+        local ln, lv = debug.getlocal(2, idx)
+        if ln == nil then
+            break
+        end
+        if ln:sub(1,1) ~= "(" then
+            if lv == nil then
+                lv = "nil"
+            end
+            lcPrint("<color 255 150 100>" .. tostring(ln) .. " = " .. print_format(lv))
+        end
+        idx = idx + 1
     end
 end
 

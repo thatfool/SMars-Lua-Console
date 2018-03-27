@@ -6,10 +6,10 @@ return PlaceObj('ModDef', {
 	'id', "fkm1iEz",
 	'steam_id', "1335979800",
 	'author', "special_snowcat",
-	'version', 16,
+	'version', 17,
 	'lua_revision', 228184,
 	'code', {
 		"Code/Script.lua",
 	},
-	'saved', 1522153852,
+	'saved', 1522169386,
 })
