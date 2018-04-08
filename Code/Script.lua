@@ -769,10 +769,10 @@ function LuaConsoleWindow:History(offset)
         self.lcInput:SetText("")
         return
     end
-    if self.historyPos > #dlgConsole.historyQueue then
-        self.historyPos = #dlgConsole.historyQueue
+    if self.historyPos > #dlgConsole.history_queue then
+        self.historyPos = #dlgConsole.history_queue
     end
-    self.lcInput:SetText(dlgConsole.historyQueue[self.historyPos])
+    self.lcInput:SetText(dlgConsole.history_queue[self.historyPos])
 end
 
 function LuaConsoleWindow:Input(text)
